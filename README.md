@@ -22,6 +22,8 @@ Three.js 已附在 `web/vendor/`，執行時不依賴 CDN。公開專案包含�
 - 復原／重做、本機草稿還原、JSON 匯入與獨立專案保存。
 - ZIP 匯出包含專案、GLB、來源摘要、通行位元、高度及 13×13 格分組。
 - 匯出目前取景 PNG。
+- 地圖庫：切換研究區域與保存專案前，先保存目前地圖的新副本。
+- 地形分類、名稱／原始路徑搜尋，以及用所選地塊建立獨立新地圖。
 
 預設 **512×512 格（128×128 公尺）**，上限 **1024×1024 格（256×256 公尺）**。右側寬／高按「套用尺寸」即可調整；擴張保留原座標、通行位元與高度，新增區域預設阻擋。
 
@@ -44,6 +46,21 @@ python tools/import-library.py --source "你的原編輯器資料夾" --project 
 素材存於 **`local/library/`**，專案存於 **`web/maps/`**；兩者均已排除 Git 追蹤。啟動時自動使用本機素材庫，也可使用 `--library 路徑` 指定另一個庫。公開庫不提供 PoE2／TalesWeaver 的原遊戲模型、貼圖、解析資料表或玩家存檔；匯入功能使用你在本機已有且可使用的資料。
 
 原有地圖 JSON 與匯出包相容。解開 ZIP 後匯入 `map.twmap.json`；其模型也必須存在於目前選用的素材庫。
+
+## 匯入 PoE2 新研究地塊
+
+研究專案已有 `all210-portable-terrain-records.json`（attempt-2）時，可以追加完整來源地塊池。匯入另需 `Pillow`：`python -m pip install Pillow`。
+
+```powershell
+python tools/import-poe2-research.py --source "你的PoE2研究專案" --destination "local/research-001"
+python server.py --library "local/research-001"
+```
+
+工具以 `local/library/` 為基礎，可用 `--base-library` 指定既有素材庫。目的地須為全新的 `local/` 子資料夾；原素材庫、研究檔案與地圖不覆寫。模型及外部 PNG 雜湊逐一檢查，所有幾何／LOD／packed buffer 保留，貼圖另嵌成 512px 預覽。`import-receipt.json` 保存結果。
+
+匯入包含 G1_2 的 210 組來源地塊，以及河岸入口／皆伐營地中央區域兩個可編輯範例。210 組是地塊素材，不是 210 張完整地圖。白色地面、材質混合與原 ARM/TGR 世界排列仍待研究；來源地面三角形的通行預覽未處理物件阻擋、水深或角色淨空，須用筆刷及試走檢查。既有研究版範例沿用其已解析的通行資料。
+
+本機可在 `local/library-settings.json` 保存 `{"library":"research-001"}`，讓預設啟動器使用該庫；此設定也不公開。
 
 ## 通行資料與接入範圍
 

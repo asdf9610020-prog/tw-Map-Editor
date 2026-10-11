@@ -1,9 +1,19 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {clone,validateMap,paint,walkPredicate,findPath,resizeMap,serializeDraft,deserializeDraft,exportMap,deriveNavigation} from '../web/model.mjs';
+import {clone,validateMap,paint,walkPredicate,findPath,resizeMap,serializeDraft,deserializeDraft,exportMap,deriveNavigation,createAssetMap} from '../web/model.mjs';
 const catalog=JSON.parse(fs.readFileSync(new URL('../web/data/catalog.json',import.meta.url),'utf8'));
 const sample=JSON.parse(fs.readFileSync(new URL('../web/data/riverbank-template.json',import.meta.url),'utf8'));
+
+test('tile studies preserve geometry anchors and sample cell centers without a half-cell shift',()=>{
+  const asset={id:'test-ground',name:'test',sizeM:[2.5,2.5],boundsXZ:[-2.5,-2.5,0,0],navigationKind:'ground-surface-preview',localNavigation:[[-2.375,-2.375,1.25],[-2.125,-2.375,1.3]]};
+  const d=createAssetMap(asset);validateMap(d,{assets:[asset]});assert.equal(d.grid.width,512);assert.deepEqual(d.tiles[0],{id:'study-tile',assetId:asset.id,x:42,y:42,height:0,yaw:0,scale:1});
+  assert.equal(d.collision.flags[32*512+32],0);assert.equal(d.collision.heights[32*512+32],1.25);assert.equal(d.collision.flags[32*512+33],0);assert.equal(d.collision.flags[32*512+34],2);assert.equal(d.provenance.originalLayoutComplete,false);assert.equal(d.acceptance.runtimeIntegrated,false);
+});
+
+test('a decoration without navigable ground never fabricates a spawn or collision',()=>{
+  const d=createAssetMap({id:'stump',name:'stump',sizeM:[2.5,2.5],localNavigation:[],navigationKind:'ground-surface-preview'});assert.equal(d.entities.length,0);assert.ok(d.collision.flags.every(f=>f===2));
+});
 
 test('public demo has a valid schema and a reachable portal',()=>{
   validateMap(sample,catalog);const [a,b]=sample.entities;assert.ok(findPath(sample,[a.x,a.y],[b.x,b.y]).length);

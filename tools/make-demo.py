@@ -41,6 +41,7 @@ def main():
     entities=[{'id':'demo-spawn','type':'spawn','name':'範例出生點','x':64,'y':64},{'id':'demo-portal','type':'portal','name':'範例出口','x':150,'y':64,'targetWorld':900002,'targetTerrain':900002,'targetRegion':0}]
     template={'schema':'twremake.authored-map.v1','id':'tw-map-editor-demo','name':'河岸與營地・自製範例','grid':{'width':w,'height':h,'cellMeters':.25,'coordinateUnitsPerCell':4,'blockedMask':2,'blockGroupSize':13},'tiles':tiles,'collision':{'flags':flags,'heights':heights,'provenance':'original demo rectangles; author may edit collision'},'entities':entities,'provenance':{'kind':'original procedural demo','inputs':inputs,'sourceCoverage':'4 self-generated demo modules','jp868NativeParityConfirmed':False},'acceptance':{'editorOnly':True,'desktopGameplayAccepted':False,'browserGameplayAccepted':False,'runtimeIntegrated':False}}
     write(WEB/'data/catalog.json',catalog);write(WEB/'data/riverbank-template.json',template);(WEB/'maps').mkdir(exist_ok=True);(WEB/'maps/.gitkeep').touch()
+    write(WEB/'data/map-library.json',{'schema':'twremake.map-library.v1','maps':[{'id':'original-demo','name':'河岸與營地・自製範例','path':'data/riverbank-template.json','description':'本專案自製的範例地形，可自由編輯。'}]})
     print('Generated 4 original GLB modules and a 512-cell demo map')
 
 if __name__=='__main__':main()

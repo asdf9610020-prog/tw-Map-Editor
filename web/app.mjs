@@ -1,13 +1,16 @@
 import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
-import {clone,validateMap,walkPredicate,paint,findPath,deriveNavigation,checkMap,exportMap,resizeMap,serializeDraft,deserializeDraft,DEFAULT_MAP_SIDE,MAX_MAP_SIDE,SCHEMA} from './model.mjs';
+import {clone,validateMap,walkPredicate,paint,findPath,deriveNavigation,checkMap,exportMap,resizeMap,serializeDraft,deserializeDraft,createAssetMap,DEFAULT_MAP_SIDE,MAX_MAP_SIDE,SCHEMA} from './model.mjs';
 
 const $=id=>document.getElementById(id), esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const [catalogue,template]=await Promise.all(['data/catalog.json','data/riverbank-template.json'].map(async p=>{const r=await fetch(p);if(!r.ok)throw Error(`讀取失敗 ${p}`);return r.json();}));
+const libraryResponse=await fetch('data/map-library.json');
+const mapLibrary=libraryResponse.ok?await libraryResponse.json():{maps:[]};
 resizeMap(template,DEFAULT_MAP_SIDE,DEFAULT_MAP_SIDE);
 const requestedProject=new URLSearchParams(location.search).get('project');
-const draftKey=requestedProject?'jp868-map-editor-draft-v1:project:'+requestedProject:'jp868-map-editor-draft-v1';
+const requestedTemplate=new URLSearchParams(location.search).get('template');
+const draftKey=requestedProject?'jp868-map-editor-draft-v1:project:'+requestedProject:requestedTemplate?'jp868-map-editor-draft-v1:template:'+requestedTemplate:'jp868-map-editor-draft-v1';
 let map=clone(template),tool='select',assetId=catalogue.assets[0].id,selected=null,undo=[],redo=[],stroke=null,drag=null,dirty=false,savingTimer,toastTimer,modelEpoch=0,ready=false;
 let pathGroup=new THREE.Group(),tileGroup=new THREE.Group(),entityGroup=new THREE.Group(),selectionGroup=new THREE.Group(),overlay,gridMesh;
 const cache=new Map(),pending=new Map(),loader=new GLTFLoader(),scene=new THREE.Scene();scene.background=new THREE.Color('#111c20');
@@ -40,9 +43,10 @@ function listObjects(){
   $('objects').querySelectorAll('button').forEach(b=>b.onclick=()=>select(b.dataset.id));
 }
 function renderLibrary(){
-  const filter=$('search').value.trim().toLowerCase();$('assetCount').textContent=`${catalogue.assets.length} 模組`;
-  $('assets').innerHTML=catalogue.assets.filter(a=>`${a.id} ${a.name}`.toLowerCase().includes(filter)).map(a=>`<button class="asset ${a.id===assetId?'selected':''}" data-asset="${a.id}" title="${esc(a.id)}"><div class="asset-visual"><img src="${esc(a.thumbnail||`thumbnails/${a.id}.png`)}" alt="${esc(a.name)}模型預覽"></div><span>${esc(a.name)}<br><small>${a.sizeM.join(' × ')} m</small></span></button>`).join('');
+  const filter=$('search').value.trim().toLowerCase(),category=$('category').value,assets=catalogue.assets.filter(a=>(!category||a.category===category)&&`${a.id} ${a.name} ${a.canonicalSource||''}`.toLowerCase().includes(filter));$('assetCount').textContent=`${assets.length} / ${catalogue.assets.length} 模組`;
+  $('assets').innerHTML=assets.map(a=>`<button class="asset ${a.id===assetId?'selected':''}" data-asset="${a.id}" title="${esc(a.canonicalSource||a.id)}"><div class="asset-visual"><img loading="lazy" src="${esc(a.thumbnail||`thumbnails/${a.id}.png`)}" alt="${esc(a.name)}模型預覽"></div><span>${esc(a.name)}<br><small>${a.sizeM.join(' × ')} m</small></span></button>`).join('');
   $('assets').querySelectorAll('button').forEach(b=>b.onclick=()=>{assetId=b.dataset.asset;setTool('terrain');renderLibrary();});
+  const asset=catalogue.assets.find(a=>a.id===assetId);$('assetDetails').textContent=`${asset.name} · ${asset.navigationKind==='ground-surface-preview'?'地面三角形通行預覽，需檢查障礙與水面':'研究版通行資料'}${asset.sourceMaterialStatus?' · 地面材質尚待還原':''}`;
 }
 function inspector(){
   const o=objectById(selected);if(!o){$('selection').innerHTML='<p class="muted">點選畫布或場景清單中的物件</p>';return;}
@@ -73,7 +77,7 @@ async function drawTiles(){
   for(const t of rows){
     if(epoch!==modelEpoch)return;
     $('loading').textContent=`讀取 ${catalogue.assets.find(a=>a.id===t.assetId)?.name} · ${++done} / ${rows.length}`;
-    try{const original=await assetModel(t.assetId);if(epoch!==modelEpoch)return;const model=original.clone(true);applyTransform(model,t);model.traverse(o=>{if(o.isMesh)o.visible=$('props').checked||o.name.toLowerCase().startsWith('ground');});tileGroup.add(model);}catch(e){errors++;console.error(e);}
+    try{const original=await assetModel(t.assetId);if(epoch!==modelEpoch)return;const model=original.clone(true);applyTransform(model,t);model.traverse(o=>{if(o.isMesh)o.visible=$('props').checked||isGround(o);});tileGroup.add(model);}catch(e){errors++;console.error(e);}
   }
   if(epoch!==modelEpoch)return;ready=true;$('loading').hidden=true;drawSelection();
   if(errors)toast(`${errors} 個地形讀取失敗，請查看來源檔`);window.editor.lastModelErrors=errors;
@@ -159,7 +163,18 @@ function testWalk(end){
   const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),new THREE.LineBasicMaterial({color:0xf3d591,depthTest:false}));line.renderOrder=18;pathGroup.add(line);toast(`可通行：${path.length} 格（編輯器路線預覽）`);
 }
 function download(name,blob){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);}
-async function saveProject(){try{const d=exportMap(map,catalogue),r=await fetch('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok)throw Error((await r.json()).error||'保存失敗');const result=await r.json();dirty=false;$('saveState').textContent='已保存 '+result.file;toast('專案已保存至獨立 maps 資料夾');}catch(e){toast(e.message);}}
+async function saveSnapshot(d=map){const r=await fetch('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(exportMap(d,catalogue))});if(!r.ok)throw Error((await r.json()).error||'保存失敗');return r.json();}
+async function saveProject(){try{const result=await saveSnapshot();dirty=false;$('saveState').textContent='已保存 '+result.file;toast('專案已保存至獨立 maps 資料夾');return result;}catch(e){toast(e.message);}}
+async function switchProject(query){
+  try{await saveSnapshot();clearTimeout(savingTimer);localStorage.setItem(draftKey,serializeDraft(map));location.search=query;}catch(e){toast('切換未完成，現有地圖已保留：'+e.message);}
+}
+async function openMapLibrary(){
+  try{const r=await fetch('/api/projects');if(!r.ok)throw Error('讀取保存專案失敗');const saved=(await r.json()).projects;
+    $('mapChoices').innerHTML=`<optgroup label="研究區域與範例">${mapLibrary.maps.map(m=>`<option value="template:${esc(m.id)}">${esc(m.name)}</option>`).join('')}</optgroup><optgroup label="已保存專案">${saved.map(p=>`<option value="project:${esc(p.file)}">${esc(p.name)} · ${esc(p.modifiedUTC.slice(0,19))}</option>`).join('')}</optgroup>`;
+    const describe=()=>{const value=$('mapChoices').value,m=mapLibrary.maps.find(m=>'template:'+m.id===value);$('mapDescription').textContent=m?m.description:'載入保存專案；其本機草稿會一併還原。';$('loadLibraryMap').disabled=!value;};$('mapChoices').onchange=describe;describe();$('mapsDialog').showModal();
+  }catch(e){toast(e.message);}
+}
+function isGround(o){return o.name.toLowerCase().startsWith('ground')||o.userData.source_role==='ground'||o.parent?.userData.source_role==='ground';}
 async function exportBundle(){try{const d=exportMap(map,catalogue),r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok)throw Error((await r.json()).error||'匯出失敗');download(`${safeName(map.id)}.twmap.zip`,await r.blob());toast('地圖包已匯出：專案、通行位元、素材與來源紀錄');}catch(e){toast(e.message);}}
 function safeName(s){return s.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,70)||'new-map';}
 function exportPng(){
@@ -172,9 +187,13 @@ function newMap(){
   const d=clone(template);d.id='new-map-'+Date.now().toString(36);d.name='未命名新地圖';d.tiles=[];d.entities=[];d.collision.flags.fill(2);d.collision.heights.fill(0);d.collision.provenance='empty authored map; all cells blocked until painted or derived';d.provenance.kind='new authored map';loadMap(d);setTool('terrain');toast('空白新地圖已建立，點选素材開始放置');
 }
 $('tools').querySelectorAll('button').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
-$('search').oninput=renderLibrary;$('undo').onclick=()=>history('undo');$('redo').onclick=()=>history('redo');$('iso').onclick=()=>fit('iso');$('top').onclick=()=>fit('top');$('fit').onclick=()=>fit();
+$('category').innerHTML='<option value="">全部分類</option>'+[...new Set(catalogue.assets.map(a=>a.category).filter(Boolean))].sort().map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+$('category').onchange=renderLibrary;$('search').oninput=renderLibrary;$('undo').onclick=()=>history('undo');$('redo').onclick=()=>history('redo');$('iso').onclick=()=>fit('iso');$('top').onclick=()=>fit('top');$('fit').onclick=()=>fit();
+$('maps').onclick=openMapLibrary;$('closeMaps').onclick=()=>$('mapsDialog').close();
+$('loadLibraryMap').onclick=()=>{const [type,...rest]=$('mapChoices').value.split(':');if(!['template','project'].includes(type))return;switchProject('?'+type+'='+encodeURIComponent(rest.join(':')));};
+$('assetMap').onclick=async()=>{try{await saveSnapshot();const d=createAssetMap(catalogue.assets.find(a=>a.id===assetId)),saved=await saveSnapshot(d);clearTimeout(savingTimer);localStorage.setItem(draftKey,serializeDraft(map));location.search='?project='+encodeURIComponent(saved.file);}catch(e){toast('地塊建圖失敗，現有地圖已保留：'+e.message);}};
 $('grid').onchange=()=>gridMesh.visible=$('grid').checked;$('collision').onchange=()=>overlay.visible=$('collision').checked;
-$('props').onchange=()=>tileGroup.traverse(o=>{if(o.isMesh)o.visible=$('props').checked||o.name.toLowerCase().startsWith('ground');});
+$('props').onchange=()=>tileGroup.traverse(o=>{if(o.isMesh)o.visible=$('props').checked||isGround(o);});
 $('name').onchange=()=>mutate(()=>map.name=$('name').value||'未命名新地圖',false);$('mapId').onchange=()=>mutate(()=>map.id=$('mapId').value||'new-map',false);
 $('resize').onclick=()=>{
   const w=Number($('width').value),h=Number($('height').value);if(!Number.isInteger(w)||!Number.isInteger(h)||w<8||h<8||w>MAX_MAP_SIDE||h>MAX_MAP_SIDE){toast(`尺寸須為 8–${MAX_MAP_SIDE} 格`);return;}
@@ -187,20 +206,23 @@ $('new').onclick=newMap;$('template').onclick=()=>{loadMap(template);toast('河�
 $('import').onclick=()=>$('file').click();$('file').onchange=async()=>{const f=$('file').files[0];if(!f)return;try{if(f.size>64*1024*1024)throw Error('專案超過 64MB');loadMap(JSON.parse(await f.text()));toast('地圖專案已匯入');}catch(e){toast('匯入失敗：'+e.message);}finally{$('file').value='';}};
 $('source').onclick=()=>info('素材與轉換來源',`${catalogue.kind||'本機匯入素材庫'}\n${catalogue.inputs.map(r=>`${r.path}\nSHA256 ${r.sha256}`).join('\n\n')}\n\n868：4 單位／格、0x02 阻擋、13×13 格分組。\n0.25m 對應一格是本工具的轉換政策。來源與推導通行資料保留於素材目錄。\n自製範例由 tools/make-demo.py 生成；本機素材依自己的來源紀錄顯示。\n尚未輸出原生 .d2m，尚未接入正式遊戲。`);
 $('closeInfo').onclick=()=>$('info').close();
-document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName)||$('info').open)return;
+document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName)||$('info').open||$('mapsDialog').open)return;
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();history(e.shiftKey?'redo':'undo');}else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();history('redo');}else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveProject();}else if(e.key==='Delete')remove();else if(e.key.toLowerCase()==='r')rotate();else if(({v:'select',t:'terrain',w:'walk',b:'block'})[e.key.toLowerCase()])setTool(({v:'select',t:'terrain',w:'walk',b:'block'})[e.key.toLowerCase()]);});
-window.editor={get map(){return map;},get ready(){return ready;},get selected(){return selected;},get tool(){return tool;},catalogue,loadMap,walkPredicate,findPath,checkMap,exportMap,deriveNavigation,
+window.editor={get map(){return map;},get ready(){return ready;},get selected(){return selected;},get tool(){return tool;},catalogue,mapLibrary,loadMap,walkPredicate,findPath,checkMap,exportMap,deriveNavigation,
   async thumbnail(id){
-    const model=(await assetModel(id)).clone(true),ss=new THREE.Scene();ss.background=null;ss.add(model);ss.add(new THREE.HemisphereLight(0xd1e5ef,0x7a6952,2));const ll=new THREE.DirectionalLight(0xffecd1,2.4);ll.position.set(-40,70,-30);ss.add(ll);
+    const asset=catalogue.assets.find(a=>a.id===id),model=(await loader.loadAsync(asset.model)).scene,ss=new THREE.Scene();ss.background=null;ss.add(model);ss.add(new THREE.HemisphereLight(0xd1e5ef,0x7a6952,2));const ll=new THREE.DirectionalLight(0xffecd1,2.4);ll.position.set(-40,70,-30);ss.add(ll);
     const box=new THREE.Box3().setFromObject(model),size=box.getSize(new THREE.Vector3()),center=box.getCenter(new THREE.Vector3()),span=Math.max(size.x,size.y,size.z)*.73,cc=new THREE.OrthographicCamera(-span,span,span,-span,.1,1000);cc.position.copy(center).add(new THREE.Vector3(90,100,90));cc.lookAt(center);
-    const rr=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});rr.setSize(256,256);rr.outputColorSpace=THREE.SRGBColorSpace;rr.toneMapping=THREE.ACESFilmicToneMapping;rr.toneMappingExposure=1.6;rr.render(ss,cc);const data=rr.domElement.toDataURL('image/png');rr.dispose();return data;
+    const rr=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});rr.setSize(256,256);rr.outputColorSpace=THREE.SRGBColorSpace;rr.toneMapping=THREE.ACESFilmicToneMapping;rr.toneMappingExposure=1.6;rr.render(ss,cc);const data=rr.domElement.toDataURL('image/png');rr.dispose();
+    const geometries=new Set(),materials=new Set(),textures=new Set();model.traverse(o=>{if(o.geometry)geometries.add(o.geometry);for(const material of o.material?(Array.isArray(o.material)?o.material:[o.material]):[]){materials.add(material);for(const value of Object.values(material))if(value?.isTexture)textures.add(value);}});for(const resource of [...geometries,...materials,...textures])resource.dispose();return data;
   },
   cellScreen(x,y){const p=new THREE.Vector3((x+.5)*map.grid.cellMeters,0,(y+.5)*map.grid.cellMeters).project(camera),r=canvas.getBoundingClientRect();return{x:r.left+(p.x+1)*r.width/2,y:r.top+(1-p.y)*r.height/2};},lastModelErrors:0};
-if(requestedProject){
+if(requestedProject||requestedTemplate){
   try{
-    if(!/^[a-zA-Z0-9_-]+\.twmap\.json$/.test(requestedProject))throw Error('專案檔名無效');
-    const response=await fetch('maps/'+encodeURIComponent(requestedProject));if(!response.ok)throw Error('找不到專案檔');
-    const project=await response.json();validateMap(project,catalogue);map=project;$('saveState').textContent='已載入保存的初始地圖';
+    let path;
+    if(requestedProject){if(!/^[a-zA-Z0-9_-]+\.twmap\.json$/.test(requestedProject))throw Error('專案檔名無效');path='maps/'+encodeURIComponent(requestedProject);}
+    else{path=mapLibrary.maps.find(m=>m.id===requestedTemplate)?.path;if(!path)throw Error('找不到地圖範例');}
+    const response=await fetch(path);if(!response.ok)throw Error('找不到專案檔');
+    const project=await response.json();validateMap(project,catalogue);map=project;$('saveState').textContent='已載入地圖';
   }catch(e){info('專案載入失敗',e.message);}
 }
 try{const draft=localStorage.getItem(draftKey);if(draft){const parsed=deserializeDraft(draft);validateMap(parsed,catalogue);map=parsed;$('saveState').textContent='已還原本機草稿';}}catch(e){console.warn('Draft ignored:',e.message);}
@@ -216,5 +238,7 @@ if(requestedProject && map.id==='poe2-initial-riverbank-001' && map.editorCanvas
     markDirty();toast('已擴大初始地圖並保存原尺寸備份；地形與標記位置保留');
   } catch(e) {info('擴大地圖未完成',e.message+'；現有地圖已保留，可稍後重新整理再試。');}
 }
+if(map.tiles.length)assetId=map.tiles[0].assetId;
+if(map.provenance?.kind==='authored single-tile study')$('category').value=catalogue.assets.find(a=>a.id===assetId)?.category||'';
 renderLibrary();refresh(true);fit('iso');setTool('select');
 function frame(){requestAnimationFrame(frame);renderer.render(scene,camera);}frame();

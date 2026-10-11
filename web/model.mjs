@@ -3,6 +3,19 @@ export const SCHEMA = 'twremake.authored-map.v1';
 export const DEFAULT_MAP_SIDE = 512;
 export const MAX_MAP_SIDE = 1024;
 export const clone = v => structuredClone(v);
+// A tile study becomes a new design project; it never inherits a world layout.
+export function createAssetMap(asset) {
+  const size=asset.sizeM||[2.5,2.5],bounds=asset.boundsXZ||[0,0,...size];
+  const x=Math.ceil(32-Math.min(0,bounds[0])*4),y=Math.ceil(32-Math.min(0,bounds[1])*4);
+  const width=Math.max(DEFAULT_MAP_SIDE,Math.ceil((x+bounds[2]*4+32)/13)*13),height=Math.max(DEFAULT_MAP_SIDE,Math.ceil((y+bounds[3]*4+32)/13)*13);
+  if(width>MAX_MAP_SIDE||height>MAX_MAP_SIDE)throw Error('此地塊超過畫布範圍');
+  const map={schema:SCHEMA,id:'tile-study-'+asset.id,name:asset.name+' · 新地圖',grid:{width,height,cellMeters:.25,coordinateUnitsPerCell:4,blockedMask:2,blockGroupSize:13},tiles:[{id:'study-tile',assetId:asset.id,x,y,height:0,yaw:0,scale:1}],entities:[],collision:{flags:Array(width*height).fill(2),heights:Array(width*height).fill(0)},provenance:{kind:'authored single-tile study',sourceCoverage:asset.canonicalSource||asset.id,originalLayoutComplete:false,jp868NativeParityConfirmed:false},acceptance:{editorOnly:true,runtimeIntegrated:false,desktopGameplayAccepted:false,browserGameplayAccepted:false}};
+  deriveNavigation(map,{assets:[asset]});
+  const first=map.collision.flags.findIndex(f=>!(f&2));
+  if(first>=0)map.entities.push({id:'study-spawn',type:'spawn',name:'新設計出生點',x:first%width,y:Math.floor(first/width)});
+  map.collision.provenance=asset.navigationKind==='ground-surface-preview'?'Ground triangles sampled at cell centers; slope >= .65 normal-Y; props, clearance, water, original collision unverified':'Transformed research navigation samples; original server collision unknown';
+  return map;
+}
 export function resizeMap(map, width, height) {
   if (![width,height].every(n=>Number.isInteger(n) && n>=8 && n<=MAX_MAP_SIDE)) throw Error(`尺寸須為 8–${MAX_MAP_SIDE} 格`);
   if ([...map.tiles,...map.entities].some(o=>o.x>=width || o.y>=height)) throw Error('有物件位於新尺寸之外，請先移動或移除');
@@ -107,7 +120,8 @@ export function deriveNavigation(map,catalogue) {
   for(const tile of map.tiles) {
     const a=catalogue.assets.find(a=>a.id===tile.assetId),r=tile.yaw*Math.PI/180,c=Math.cos(r),s=Math.sin(r);
     for(const [x,z,h]of a.localNavigation) {
-      const cx=Math.round(tile.x+(c*x+s*z)*tile.scale/g.cellMeters),cy=Math.round(tile.y+(-s*x+c*z)*tile.scale/g.cellMeters);
+      const snap=a.navigationKind==='ground-surface-preview'?Math.floor:Math.round;
+      const cx=snap(tile.x+(c*x+s*z)*tile.scale/g.cellMeters),cy=snap(tile.y+(-s*x+c*z)*tile.scale/g.cellMeters);
       if(cx<0||cy<0||cx>=g.width||cy>=g.height)continue;
       const i=cy*g.width+cx;map.collision.flags[i]&=~2;map.collision.heights[i]=h*tile.scale+tile.height;
     }

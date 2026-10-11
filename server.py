@@ -78,7 +78,7 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kwargs): super().__init__(*args,directory=str(APP),**kwargs)
     def translate_path(self,path):
         rel=unquote(urlsplit(path).path).lstrip('/')
-        root=LIBRARY if rel in ['data/catalog.json','data/riverbank-template.json'] or rel.startswith(('models/','thumbnails/')) else APP
+        root=LIBRARY if rel in ['data/catalog.json','data/riverbank-template.json','data/map-library.json'] or rel.startswith(('models/','thumbnails/','templates/')) else APP
         resolved=(root/rel).resolve()
         return str(resolved if resolved.is_relative_to(root.resolve()) else APP/'.blocked-path')
     def log_message(self,fmt,*args):
@@ -89,6 +89,15 @@ class Handler(SimpleHTTPRequestHandler):
         b=encode(d);self.send_response(code);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b)
     def do_GET(self):
         if self.path=='/api/health': return self.send_json(200,{'ok':True,'tool':'tw-map-editor','root':str(ROOT),'library':str(LIBRARY),'maps':str(MAPS)})
+        if self.path=='/api/projects':
+            projects=[]
+            for file in sorted(MAPS.glob('*.twmap.json'),key=lambda p:p.stat().st_mtime,reverse=True)[:200]:
+                if not re.fullmatch(r'[a-zA-Z0-9_-]+\.twmap\.json',file.name):continue
+                try:
+                    d=json.loads(file.read_text('utf-8-sig'))
+                    projects.append({'file':file.name,'name':d.get('name',file.name),'id':d.get('id'),'modifiedUTC':datetime.datetime.fromtimestamp(file.stat().st_mtime,datetime.timezone.utc).isoformat()})
+                except (ValueError,OSError):continue
+            return self.send_json(200,{'projects':projects})
         return super().do_GET()
     def do_POST(self):
         try:
@@ -116,6 +125,11 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8');a=argparse.ArgumentParser();a.add_argument('--port',type=int,default=8790)
     mode=a.add_mutually_exclusive_group();mode.add_argument('--library',type=Path);mode.add_argument('--demo',action='store_true');opt=a.parse_args()
     local=ROOT/'local/library'
+    settings=ROOT/'local/library-settings.json'
+    if settings.exists():
+        configured=(ROOT/'local'/json.loads(settings.read_text('utf-8'))['library']).resolve()
+        if not configured.is_relative_to((ROOT/'local').resolve()):raise ValueError('Configured library leaves local folder')
+        local=configured
     LIBRARY=APP if opt.demo else (opt.library.resolve() if opt.library else local if (local/'data/catalog.json').exists() else APP)
     CATALOGUE=json.loads((LIBRARY/'data/catalog.json').read_text('utf-8-sig'));ASSETS={r['id']:r for r in CATALOGUE['assets']}
     http=ThreadingHTTPServer(('127.0.0.1',opt.port),Handler)
