@@ -1,0 +1,14 @@
+local/
+web/maps/*
+!web/maps/.gitkeep
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+test-results/
+playwright-report/
+.env
+.env.*
+*.log
+*.pid
+
